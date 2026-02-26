@@ -67,6 +67,15 @@ impl<Signed> TransactionableOrSigned<Signed> {
     }
 }
 
+impl<Signed> TransactionableOrSigned<Signed> {
+    pub fn signed_ref(&self) -> Option<&Signed> {
+        match self {
+            Self::Signed((signed, _)) => Some(signed),
+            Self::Transactionable(_) => None,
+        }
+    }
+}
+
 impl<S> TransactionableOrSigned<S> {
     pub fn transactionable(self) -> Box<dyn Transactionable> {
         match self {
