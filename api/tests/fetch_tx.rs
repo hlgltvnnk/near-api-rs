@@ -46,15 +46,6 @@ async fn fetch_tx_status() -> TestResult {
 
     println!("HASHES: {:?} {:?}", hash1, signed.get_hash());
 
-    // let tx = Tokens::account(account.clone())
-    //     .send_to(receiver.clone())
-    //     .near(NearToken::from_millinear(1))
-    //     .with_signer(signer.clone())
-    //     .wait_until(near_api_types::TxExecutionStatus::Included)
-    //     .send_to(&network)
-    //     .await?
-    //     .assert_success();
-
     let end_nonce = Account(account.clone())
         .access_key(signer.get_public_key().await?)
         .fetch_from(&network)
@@ -64,17 +55,28 @@ async fn fetch_tx_status() -> TestResult {
 
     assert_eq!(end_nonce.0, start_nonce.0 + 1);
 
+    // let tx = Tokens::account(account.clone())
+    //     .send_to(receiver.clone())
+    //     .near(NearToken::from_millinear(1))
+    //     .with_signer(signer.clone())
+    //     .wait_until(near_api_types::TxExecutionStatus::Included)
+    //     .send_to(&network)
+    //     .await?
+    //     .assert_success();
+
     let res = ExecuteSignedTransaction::fetch_tx(
         network,
-        // RpcTransactionStatusRequest::Variant1 {
-        //     sender_account_id: account.clone(),
-        //     tx_hash: tx.transaction().get_hash().into(),
-        //     wait_until: near_api_types::TxExecutionStatus::IncludedFinal,
-        // },
-        RpcTransactionStatusRequest::Variant0 {
-            signed_tx_base64: signed.into(),
+        // this is not working
+        RpcTransactionStatusRequest::Variant1 {
+            sender_account_id: account.clone(),
+            tx_hash: tx.transaction().get_hash().into(),
             wait_until: near_api_types::TxExecutionStatus::IncludedFinal,
         },
+        // this will work
+        // RpcTransactionStatusRequest::Variant0 {
+        //     signed_tx_base64: signed.into(),
+        //     wait_until: near_api_types::TxExecutionStatus::IncludedFinal,
+        // },
     )
     .await?
     .assert_success();
