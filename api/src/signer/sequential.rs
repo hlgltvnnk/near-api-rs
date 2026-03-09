@@ -66,12 +66,14 @@ impl Signer {
     ) -> Result<(Nonce, CryptoHash, BlockHeight), SignerError> {
         debug!(target: SIGNER_TARGET, "Fetching transaction nonce");
 
-        let (cached_nonce, block_hash, block_height) =
-            Self::fetch_nonce_data(account_id.clone(), public_key, network).await?;
-
-        let key = (network.network_name.clone(), account_id, public_key);
+        let key = (network.network_name.clone(), account_id.clone(), public_key);
         let lock = self.get_sequential_nonce(key).await;
         let mut nonce = lock.lock().await;
+
+        // It is important to fetch the nonce data after lock to get fresh block hash
+        let (cached_nonce, block_hash, block_height) =
+            Self::fetch_nonce_data(account_id, public_key, network).await?;
+
         *nonce = (*nonce).max(cached_nonce) + 1;
 
         Ok((*nonce, block_hash, block_height))
