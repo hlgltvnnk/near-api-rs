@@ -83,7 +83,6 @@ impl Signer {
 
     async fn get_signer_guard(&self, key: TransactionGroupKey) -> SignerGuard {
         let pool_keys = { self.pool.read().await.keys().cloned().collect::<Vec<_>>() };
-
         let group_lock = self.get_group_signers(key).await;
 
         // Select the signer while holding the group lock
@@ -98,12 +97,14 @@ impl Signer {
             if let Some(key) = missing_key {
                 let cache = SignerCache::new();
                 group.insert(key, cache.clone());
+
                 (key, cache)
             } else {
                 let (pk, cache) = group
                     .iter()
                     .min_by_key(|(_, cache)| cache.pending_count())
                     .expect("pool is non-empty so group has at least one signer");
+
                 (*pk, cache.clone())
             }
         };
