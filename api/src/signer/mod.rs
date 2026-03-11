@@ -109,7 +109,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicU16},
+    sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
+    },
 };
 
 use futures::lock::Mutex;
@@ -390,19 +393,48 @@ pub trait SignerTrait {
 /// Each transaction group is identified by:  network name, account_id
 pub type TransactionGroupKey = (String, AccountId);
 
-// Each signer in the group has a nonce cache and a load counter for the sequential sending
-
-pub type SignerCache = (Arc<AtomicU16>, Arc<Mutex<u64>>);
-
-/// Each tx group manages nonces separately for each public key,
-/// locking it during tx broadcasting which is important for the
-/// sequential sending
+/// Per-key state within a transaction group: tracks how many transactions are
+/// pending and holds nonce cache access
 ///
 /// In order to evenly distribute transactions across multiple keys in the pool,
 /// each signer in the group has a current load counter
-/// which is incremented on each pending transaction (waiting for the currents
-/// signer to unlock) and decremented after transaction is included to block
-pub type TransactionGroup = HashMap<PublicKey, SignerCache>;
+/// The load counter is incremented when a transaction begins waiting for the
+/// nonce lock and decremented when the transaction is fully processed. This
+/// allows [`Signer`] to route new transactions to the less loaded key
+#[derive(Clone)]
+pub(crate) struct SignerCache {
+    load: Arc<AtomicU16>,
+    nonce: Arc<Mutex<u64>>,
+}
+
+impl SignerCache {
+    pub fn new() -> Self {
+        Self {
+            load: Arc::new(AtomicU16::new(0)),
+            nonce: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    pub fn pending_count(&self) -> u16 {
+        self.load.load(Ordering::SeqCst)
+    }
+
+    pub fn increment_load(&self) {
+        self.load.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn decrement_load(&self) {
+        self.load.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub async fn lock_nonce(&self) -> futures::lock::OwnedMutexGuard<u64> {
+        self.nonce.clone().lock_owned().await
+    }
+}
+
+/// Each tx group manages nonces separately for each public key
+/// locking them during tx broadcasting for sequential sending
+pub(crate) type TransactionGroup = HashMap<PublicKey, SignerCache>;
 
 /// A [Signer](`Signer`) is a wrapper around a single or multiple signer implementations
 /// of [SignerTrait](`SignerTrait`).

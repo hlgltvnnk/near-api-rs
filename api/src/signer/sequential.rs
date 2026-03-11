@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU16, Ordering},
-    },
-};
+use std::sync::Arc;
 
 use futures::lock::{Mutex, OwnedMutexGuard};
 use near_api_types::{
@@ -25,26 +19,23 @@ use crate::{
 
 struct SignerGuard {
     nonce_guard: OwnedMutexGuard<u64>,
-    load_counter: Arc<AtomicU16>,
+    cache: SignerCache,
     public_key: PublicKey,
 }
 
 impl SignerGuard {
-    pub async fn lock_signer(public_key: PublicKey, cache: SignerCache) -> Self {
-        // Increment load counter to indicate a pending transaction for the signer
-        cache.0.fetch_add(1, Ordering::SeqCst);
-
-        // Locking until the transaction is sent
-        let nonce_guard = cache.1.lock_owned().await;
+    pub async fn lock(public_key: PublicKey, cache: SignerCache) -> Self {
+        cache.increment_load();
+        let nonce_guard = cache.lock_nonce().await;
 
         Self {
             nonce_guard,
-            load_counter: Arc::clone(&cache.0),
+            cache,
             public_key,
         }
     }
 
-    pub fn get_nonce(&self) -> u64 {
+    pub fn nonce(&self) -> u64 {
         *self.nonce_guard
     }
 
@@ -55,8 +46,7 @@ impl SignerGuard {
 
 impl Drop for SignerGuard {
     fn drop(&mut self) {
-        // Decrement load counter to indicate the transaction has been processed
-        self.load_counter.fetch_sub(1, Ordering::SeqCst);
+        self.cache.decrement_load();
     }
 }
 
@@ -87,37 +77,38 @@ impl Signer {
             .lock()
             .await
             .entry(key)
-            .or_insert_with(|| Arc::new(Mutex::new(HashMap::new())))
+            .or_insert_with(|| Arc::new(Mutex::new(TransactionGroup::new())))
             .clone()
     }
 
     async fn get_signer_guard(&self, key: TransactionGroupKey) -> SignerGuard {
         let pool_keys = { self.pool.read().await.keys().cloned().collect::<Vec<_>>() };
 
+        let group_lock = self.get_group_signers(key).await;
+
+        // Select the signer while holding the group lock
+        // to avoid blocking other tasks from selecting idle signers in the same group
         // It is important to lock whole group before checking for missing keys
         // to avoid race conditions
-        let group_lock = self.get_group_signers(key).await;
-        let mut group_signers = group_lock.lock().await;
+        let (public_key, cache) = {
+            let mut group = group_lock.lock().await;
 
-        let missing_key = pool_keys
-            .into_iter()
-            .find(|k| !group_signers.contains_key(k));
+            let missing_key = pool_keys.into_iter().find(|k| !group.contains_key(k));
 
-        // Allocate new signer in group
-        if let Some(signer) = missing_key {
-            let signer_cache = (Arc::new(AtomicU16::new(0)), Arc::new(Mutex::new(0)));
-            group_signers.insert(signer.clone(), signer_cache.clone());
+            if let Some(key) = missing_key {
+                let cache = SignerCache::new();
+                group.insert(key, cache.clone());
+                (key, cache)
+            } else {
+                let (pk, cache) = group
+                    .iter()
+                    .min_by_key(|(_, cache)| cache.pending_count())
+                    .expect("pool is non-empty so group has at least one signer");
+                (*pk, cache.clone())
+            }
+        };
 
-            return SignerGuard::lock_signer(signer, signer_cache).await;
-        }
-
-        // Should contain at least one signer
-        let (signer, signer_cache) = group_signers
-            .iter()
-            .max_by_key(|(_, signer_cache)| signer_cache.0.load(Ordering::SeqCst))
-            .unwrap();
-
-        SignerGuard::lock_signer(*signer, signer_cache.clone()).await
+        SignerGuard::lock(public_key, cache).await
     }
 
     /// Fetches the transaction nonce and block hash associated to the access key. Internally
@@ -150,7 +141,7 @@ impl Signer {
 
         Ok((
             signer_guard.public_key,
-            signer_guard.get_nonce(),
+            signer_guard.nonce(),
             block_hash,
             block_height,
         ))
@@ -239,7 +230,7 @@ impl Signer {
             .sign(
                 transaction,
                 signer_guard.public_key,
-                signer_guard.get_nonce(),
+                signer_guard.nonce(),
                 block_hash,
             )
             .await?;
@@ -277,7 +268,7 @@ impl Signer {
             .sign_meta(
                 transaction,
                 signer_guard.public_key,
-                signer_guard.get_nonce(),
+                signer_guard.nonce(),
                 block_hash,
                 block_height + tx_live_for,
             )
