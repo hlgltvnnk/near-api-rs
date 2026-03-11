@@ -24,7 +24,7 @@ use crate::{
     config::{NetworkConfig, RetryResponse, retry},
     errors::{
         ArgumentValidationError, ExecuteMetaTransactionsError, ExecuteTransactionError,
-        MetaSignError, SendRequestError, SignerError, ValidationError,
+        MetaSignError, SendRequestError, ValidationError,
     },
     signer::Signer,
 };
@@ -194,16 +194,12 @@ impl ExecuteSignedTransaction {
 
         let transaction = transaction.prepopulated()?;
 
-        let signer_key = self
+        let (signer_key, nonce, hash, _) = self
             .signer
-            .get_public_key()
-            .await
-            .map_err(SignerError::from)?;
-        let (nonce, hash, _) = self
-            .signer
-            .fetch_tx_nonce(transaction.signer_id.clone(), signer_key, network)
+            .fetch_tx_nonce_and_signer(transaction.signer_id.clone(), network)
             .await
             .map_err(MetaSignError::from)?;
+
         self.presign_offline(signer_key, hash, nonce).await
     }
 
@@ -479,17 +475,13 @@ impl ExecuteMetaTransaction {
         };
 
         let transaction = transaction.prepopulated()?;
-        let signer_key = self
+
+        let (signer_key, nonce, block_hash, block_height) = self
             .signer
-            .get_public_key()
-            .await
-            .map_err(SignerError::from)
-            .map_err(MetaSignError::from)?;
-        let (nonce, block_hash, block_height) = self
-            .signer
-            .fetch_tx_nonce(transaction.signer_id.clone(), signer_key, network)
+            .fetch_tx_nonce_and_signer(transaction.signer_id.clone(), network)
             .await
             .map_err(MetaSignError::from)?;
+
         self.presign_offline(signer_key, block_hash, nonce, block_height)
             .await
     }

@@ -28,8 +28,9 @@ async fn main() -> TestResult {
     .await?;
     let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
     let signer = Signer::from_secret_key(DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse()?)?;
+    let public_key = signer.get_public_keys().await.first().cloned().unwrap();
 
-    println!("Initial public key: {}", signer.get_public_key().await?);
+    println!("Initial public key: {}", public_key);
 
     let secret_key = generate_secret_key()?;
     println!("New public key: {}", secret_key.public_key());

@@ -9,7 +9,7 @@ async fn main() -> testresult::TestResult {
     let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
 
     let signer = Signer::from_secret_key(DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse()?)?;
-    let public_key = signer.get_public_key().await?;
+    let public_key = signer.get_public_keys().await.first().cloned().unwrap();
 
     let mut nonce = [0u8; 32];
     rand_bytes(&mut nonce)?;

@@ -34,7 +34,7 @@ async fn main() -> testresult::TestResult {
     } else {
         // Let's add ledger to the account with the new seed phrase
         let ledger = Signer::from_ledger()?;
-        let ledger_pubkey = ledger.get_public_key().await?;
+        let ledger_pubkey = ledger.get_public_keys().await.first().cloned().unwrap();
         Account(account.clone())
             .add_key(AccessKeyPermission::FullAccess, ledger_pubkey)
             .with_signer(Signer::from_seed_phrase(&new_seed_phrase, Some("smile"))?)

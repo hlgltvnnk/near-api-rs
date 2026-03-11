@@ -27,8 +27,10 @@ async fn correct_nonces_for_different_networks() -> TestResult {
         .presign_with(&network)
         .await?;
 
+    let pubkey = signer.get_public_keys().await.first().cloned().unwrap();
+
     let nonce_before = Account(account.clone())
-        .access_key(signer.get_public_key().await?)
+        .access_key(pubkey)
         .fetch_from(&network)
         .await?
         .data
@@ -39,7 +41,7 @@ async fn correct_nonces_for_different_networks() -> TestResult {
         .await?;
 
     let nonce_after = Account(account.clone())
-        .access_key(signer.get_public_key().await?)
+        .access_key(pubkey)
         .fetch_from(&network)
         .await?
         .data
@@ -76,9 +78,10 @@ async fn sequential_nonces() -> TestResult {
     .into_iter()
     .collect::<Result<Vec<_>, _>>()?;
 
+    let public_key = signer.get_public_keys().await.first().cloned().unwrap();
     // Try to presign with non sequential nonce
     tx.with_signer(Arc::clone(&signer))
-        .presign_offline(signer.get_public_key().await?, CryptoHash::default(), 0)
+        .presign_offline(public_key, CryptoHash::default(), 0)
         .await?
         .send_to(&network)
         .await

@@ -109,10 +109,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU16, AtomicUsize, Ordering},
-    },
+    sync::{Arc, atomic::AtomicU16},
 };
 
 use futures::lock::Mutex;
@@ -437,7 +434,6 @@ impl Signer {
                 Box::new(signer) as Box<dyn SignerTrait + Send + Sync + 'static>,
             )])),
             nonce_cache: Mutex::new(HashMap::new()),
-            current_public_key: AtomicUsize::new(0),
         }))
     }
 
@@ -641,20 +637,12 @@ impl Signer {
         })
     }
 
-    /// Retrieves the public key from the pool of signers.
-    /// The public key is rotated on each call.
+    /// Retrieves the public keys from the pool of signers.
     #[instrument(skip(self))]
-    pub async fn get_public_key(&self) -> Result<PublicKey, PublicKeyError> {
-        let index = self.current_public_key.fetch_add(1, Ordering::SeqCst);
-        let public_key = {
-            let pool = self.pool.read().await;
-            *pool
-                .keys()
-                .nth(index % pool.len())
-                .ok_or(PublicKeyError::PublicKeyIsNotAvailable)?
-        };
-        debug!(target: SIGNER_TARGET, "Public key retrieved");
-        Ok(public_key)
+    pub async fn get_public_keys(&self) -> Vec<PublicKey> {
+        let pool = self.pool.read().await;
+
+        pool.keys().cloned().collect()
     }
 
     #[instrument(skip(self, transaction), fields(signer_id = %transaction.signer_id, receiver_id = %transaction.receiver_id))]
@@ -878,7 +866,7 @@ mod nep_413_tests {
             None,
         )
         .unwrap();
-        let public_key = signer.get_public_key().await.unwrap();
+        let public_key = signer.get_public_keys().await.first().cloned().unwrap();
         let signature = signer
             .sign_message_nep413("round-toad.testnet".parse().unwrap(), public_key, &payload)
             .await
@@ -911,7 +899,7 @@ mod nep_413_tests {
             None,
         )
         .unwrap();
-        let public_key = signer.get_public_key().await.unwrap();
+        let public_key = signer.get_public_keys().await.first().cloned().unwrap();
         let signature = signer
             .sign_message_nep413("round-toad.testnet".parse().unwrap(), public_key, &payload)
             .await
@@ -932,7 +920,7 @@ mod nep_413_tests {
         let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
 
         let signer = Signer::from_secret_key(DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse()?)?;
-        let public_key = signer.get_public_key().await?;
+        let public_key = signer.get_public_keys().await.first().cloned().unwrap();
 
         let payload: NEP413Payload = NEP413Payload {
             message: "Hello NEAR!".to_string(),
@@ -967,7 +955,7 @@ mod nep_413_tests {
         let secret_key = generate_secret_key()?;
 
         let signer = Signer::from_secret_key(secret_key)?;
-        let public_key = signer.get_public_key().await?;
+        let public_key = signer.get_public_keys().await.first().cloned().unwrap();
 
         let payload: NEP413Payload = NEP413Payload {
             message: "Hello NEAR!".to_string(),
@@ -1003,7 +991,7 @@ mod nep_413_tests {
 
         let msg_signer = Signer::from_secret_key(secret_key)?;
         let tx_signer = Signer::from_secret_key(DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse()?)?;
-        let public_key = msg_signer.get_public_key().await?;
+        let public_key = msg_signer.get_public_keys().await.first().cloned().unwrap();
 
         Account(DEFAULT_GENESIS_ACCOUNT.into())
             .add_key(

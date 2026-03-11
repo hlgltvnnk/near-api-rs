@@ -24,27 +24,38 @@ use crate::{
 };
 
 struct SignerGuard {
-    _guard: OwnedMutexGuard<u64>,
+    nonce_guard: OwnedMutexGuard<u64>,
     load_counter: Arc<AtomicU16>,
     public_key: PublicKey,
 }
 
 impl SignerGuard {
     pub async fn lock_signer(public_key: PublicKey, cache: SignerCache) -> Self {
+        // Increment load counter to indicate a pending transaction for the signer
         cache.0.fetch_add(1, Ordering::SeqCst);
 
-        let quard = cache.1.lock_owned().await;
+        // Locking until the transaction is sent
+        let nonce_guard = cache.1.lock_owned().await;
 
         Self {
-            _guard: quard,
+            nonce_guard,
             load_counter: Arc::clone(&cache.0),
             public_key,
         }
+    }
+
+    pub fn get_nonce(&self) -> u64 {
+        *self.nonce_guard
+    }
+
+    pub fn refresh_nonce(&mut self, fetched_nonce: u64) {
+        *self.nonce_guard = (*self.nonce_guard).max(fetched_nonce) + 1;
     }
 }
 
 impl Drop for SignerGuard {
     fn drop(&mut self) {
+        // Decrement load counter to indicate the transaction has been processed
         self.load_counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -117,29 +128,32 @@ impl Signer {
     /// to load-balanced RPC endpoints where different nodes may be at different chain heights.
     ///
     /// NOTE: This shouldn't be used during sequential sending!
+    /// This method is used internally by the signer to fetch the nonce and block hash before signing
+    /// In case of sequential sending it will lock the same signer!
     #[allow(clippy::significant_drop_tightening)]
     #[instrument(skip(self, network))]
-    pub async fn fetch_tx_nonce(
+    pub async fn fetch_tx_nonce_and_signer(
         &self,
         account_id: AccountId,
         network: &NetworkConfig,
-    ) -> Result<(Nonce, CryptoHash, BlockHeight), SignerError> {
+    ) -> Result<(PublicKey, Nonce, CryptoHash, BlockHeight), SignerError> {
         debug!(target: SIGNER_TARGET, "Fetching transaction nonce");
 
-        unimplemented!()
-        // let key = (network.network_name.clone(), account_id.clone());
-        // let (public_key, signer_cache) = self.get_signer_cache(key).await;
-        // let (load_counter, nonce_lock) = &*signer_cache;
+        let key = (network.network_name.clone(), account_id.clone());
+        let mut signer_guard = self.get_signer_guard(key).await;
 
-        // let mut nonce = nonce_lock.lock().await;
+        // It is important to fetch the nonce data after lock to get fresh block hash
+        let (fetched_nonce, block_hash, block_height) =
+            Self::fetch_nonce_data(account_id, signer_guard.public_key, network).await?;
 
-        // // It is important to fetch the nonce data after lock to get fresh block hash
-        // let (fetched_nonce, block_hash, block_height) =
-        //     Self::fetch_nonce_data(account_id, public_key, network).await?;
+        signer_guard.refresh_nonce(fetched_nonce);
 
-        // *nonce = (*nonce).max(fetched_nonce) + 1;
-
-        // Ok((*nonce, block_hash, block_height))
+        Ok((
+            signer_guard.public_key,
+            signer_guard.get_nonce(),
+            block_hash,
+            block_height,
+        ))
     }
 
     /// Signs and sends a transaction to the network.
@@ -194,14 +208,7 @@ impl Signer {
         transaction: PrepopulateTransaction,
         tx_live_for: BlockHeight,
     ) -> Result<reqwest::Response, ExecuteMetaTransactionsError> {
-        let account_id = account_id.into();
-        let public_key = self
-            .get_public_key()
-            .await
-            .map_err(SignerError::PublicKeyError)
-            .map_err(MetaSignError::from)?;
-
-        self.broadcast_meta_tx(account_id, public_key, network, transaction, tx_live_for)
+        self.broadcast_meta_tx(account_id.into(), network, transaction, tx_live_for)
             .await
     }
 
@@ -218,32 +225,27 @@ impl Signer {
         let account_id = account_id.into();
 
         let key = (network.network_name.clone(), account_id.clone());
-        let (public_key, signer_cache) = self.get_signer_cache(key).await;
-        let (load_counter, nonce_lock) = &*signer_cache;
-
-        // Increment load counter to indicate a pending transaction for the signer
-        load_counter.fetch_add(1, Ordering::SeqCst);
-
-        // Locking until the transaction is sent
-        let mut nonce = nonce_lock.lock().await;
+        let mut signer_guard = self.get_signer_guard(key).await;
 
         // It is important to fetch the nonce data after lock to get fresh block hash
         let (fetched_nonce, block_hash, _) =
-            Self::fetch_nonce_data(account_id, public_key, network)
+            Self::fetch_nonce_data(account_id, signer_guard.public_key, network)
                 .await
                 .map_err(MetaSignError::from)?;
 
-        *nonce = (*nonce).max(fetched_nonce) + 1;
+        signer_guard.refresh_nonce(fetched_nonce);
 
         let signed = self
-            .sign(transaction, public_key, *nonce, block_hash)
+            .sign(
+                transaction,
+                signer_guard.public_key,
+                signer_guard.get_nonce(),
+                block_hash,
+            )
             .await?;
 
         let result =
             ExecuteSignedTransaction::send_impl(network, signed.clone(), wait_until).await?;
-
-        // Decrement load counter to indicate the transaction has been processed
-        load_counter.fetch_sub(1, Ordering::SeqCst);
 
         Ok((signed, result))
     }
@@ -253,7 +255,6 @@ impl Signer {
     async fn broadcast_meta_tx(
         &self,
         account_id: impl Into<AccountId>,
-        public_key: PublicKey,
         network: &NetworkConfig,
         transaction: PrepopulateTransaction,
         tx_live_for: BlockHeight,
@@ -262,38 +263,26 @@ impl Signer {
         let account_id = account_id.into();
 
         let key = (network.network_name.clone(), account_id.clone());
-        let (public_key, signer_cache) = self.get_signer_cache(key).await;
-        let (load_counter, nonce_lock) = &*signer_cache;
-
-        // Increment load counter to indicate a pending transaction for the signer
-        load_counter.fetch_add(1, Ordering::SeqCst);
-
-        // Locking until the transaction is sent
-        let mut nonce = nonce_lock.lock().await;
+        let mut signer_guard = self.get_signer_guard(key).await;
 
         // It is important to fetch the nonce data after lock to get fresh block hash
         let (fetched_nonce, block_hash, block_height) =
-            Self::fetch_nonce_data(account_id, public_key, network)
+            Self::fetch_nonce_data(account_id, signer_guard.public_key, network)
                 .await
                 .map_err(MetaSignError::from)?;
 
-        *nonce = (*nonce).max(fetched_nonce) + 1;
+        signer_guard.refresh_nonce(fetched_nonce);
 
         let signed = self
             .sign_meta(
                 transaction,
-                public_key,
-                *nonce,
+                signer_guard.public_key,
+                signer_guard.get_nonce(),
                 block_hash,
                 block_height + tx_live_for,
             )
             .await?;
 
-        let result = ExecuteMetaTransaction::send_impl(network, signed).await;
-
-        // Decrement load counter to indicate the transaction has been processed
-        load_counter.fetch_sub(1, Ordering::SeqCst);
-
-        result
+        ExecuteMetaTransaction::send_impl(network, signed).await
     }
 }

@@ -22,8 +22,10 @@ async fn multiple_sequential_tx_at_same_time_from_same_key() -> TestResult {
     let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
     let signer = Signer::from_secret_key(DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse()?)?;
 
+    let public_key = signer.get_public_keys().await.first().cloned().unwrap();
+
     let start_nonce = Account(account.clone())
-        .access_key(signer.get_public_key().await?)
+        .access_key(public_key)
         .fetch_from(&network)
         .await?
         .data
@@ -47,7 +49,7 @@ async fn multiple_sequential_tx_at_same_time_from_same_key() -> TestResult {
     .collect::<Result<Vec<_>, _>>()?;
 
     let end_nonce = Account(account.clone())
-        .access_key(signer.get_public_key().await?)
+        .access_key(public_key)
         .fetch_from(&network)
         .await?
         .data
