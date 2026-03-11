@@ -111,7 +111,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU16, AtomicUsize, Ordering},
     },
 };
 
@@ -390,8 +390,22 @@ pub trait SignerTrait {
     fn get_public_key(&self) -> Result<PublicKey, PublicKeyError>;
 }
 
-/// Each transaction group is identified by:  network name, account_id, public_key
-pub type TransactionGroupKey = (String, AccountId, PublicKey);
+/// Each transaction group is identified by:  network name, account_id
+pub type TransactionGroupKey = (String, AccountId);
+
+// Each signer in the group has a nonce cache and a load counter for the sequential sending
+
+pub type SignerCache = (Arc<AtomicU16>, Arc<Mutex<u64>>);
+
+/// Each tx group manages nonces separately for each public key,
+/// locking it during tx broadcasting which is important for the
+/// sequential sending
+///
+/// In order to evenly distribute transactions across multiple keys in the pool,
+/// each signer in the group has a current load counter
+/// which is incremented on each pending transaction (waiting for the currents
+/// signer to unlock) and decremented after transaction is included to block
+pub type TransactionGroup = HashMap<PublicKey, SignerCache>;
 
 /// A [Signer](`Signer`) is a wrapper around a single or multiple signer implementations
 /// of [SignerTrait](`SignerTrait`).
@@ -407,8 +421,7 @@ pub type TransactionGroupKey = (String, AccountId, PublicKey);
 /// adding more keys to the signer pool
 pub struct Signer {
     pool: tokio::sync::RwLock<HashMap<PublicKey, Box<dyn SignerTrait + Send + Sync + 'static>>>,
-    nonce_cache: Mutex<HashMap<TransactionGroupKey, Arc<Mutex<u64>>>>,
-    current_public_key: AtomicUsize,
+    nonce_cache: Mutex<HashMap<TransactionGroupKey, Arc<Mutex<TransactionGroup>>>>,
 }
 
 impl Signer {
